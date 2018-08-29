@@ -9,6 +9,7 @@ import textwrap
 import zipfile
 import py
 import pytest
+import six
 
 import _pytest._code
 from _pytest.assertion import util
@@ -49,7 +50,7 @@ def getmsg(f, extra_ns=None, must_pass=False):
     ns = {}
     if extra_ns is not None:
         ns.update(extra_ns)
-    py.builtin.exec_(code, ns)
+    six.exec_(code, ns)
     func = ns[f.__name__]
     try:
         func()
@@ -560,7 +561,7 @@ class TestAssertionRewrite(object):
         assert getmsg(f) == "assert 42"
 
         def my_reprcompare(op, left, right):
-            return "%s %s %s" % (left, op, right)
+            return "{} {} {}".format(left, op, right)
 
         monkeypatch.setattr(util, "_reprcompare", my_reprcompare)
 
@@ -654,12 +655,10 @@ class TestRewriteOnImport(object):
     def test_readonly(self, testdir):
         sub = testdir.mkdir("testing")
         sub.join("test_readonly.py").write(
-            py.builtin._totext(
-                """
+            b"""
 def test_rewritten():
     assert "@py_builtins" in globals()
-            """
-            ).encode("utf-8"),
+            """,
             "wb",
         )
         old_mode = sub.stat().mode
@@ -1040,14 +1039,14 @@ class TestAssertionRewriteHookDetails(object):
         """
         path = testdir.mkpydir("foo")
         path.join("test_foo.py").write(
-            _pytest._code.Source(
+            textwrap.dedent(
+                """\
+                class Test(object):
+                    def test_foo(self):
+                        import pkgutil
+                        data = pkgutil.get_data('foo.test_foo', 'data.txt')
+                        assert data == b'Hey'
                 """
-            class Test(object):
-                def test_foo(self):
-                    import pkgutil
-                    data = pkgutil.get_data('foo.test_foo', 'data.txt')
-                    assert data == b'Hey'
-        """
             )
         )
         path.join("data.txt").write("Hey")
@@ -1125,3 +1124,32 @@ def test_simple_failure():
 
         result = testdir.runpytest()
         result.stdout.fnmatch_lines("*E*assert (1 + 1) == 3")
+
+
+def test_rewrite_infinite_recursion(testdir, pytestconfig, monkeypatch):
+    """Fix infinite recursion when writing pyc files: if an import happens to be triggered when writing the pyc
+    file, this would cause another call to the hook, which would trigger another pyc writing, which could
+    trigger another import, and so on. (#3506)"""
+    from _pytest.assertion import rewrite
+
+    testdir.syspathinsert()
+    testdir.makepyfile(test_foo="def test_foo(): pass")
+    testdir.makepyfile(test_bar="def test_bar(): pass")
+
+    original_write_pyc = rewrite._write_pyc
+
+    write_pyc_called = []
+
+    def spy_write_pyc(*args, **kwargs):
+        # make a note that we have called _write_pyc
+        write_pyc_called.append(True)
+        # try to import a module at this point: we should not try to rewrite this module
+        assert hook.find_module("test_bar") is None
+        return original_write_pyc(*args, **kwargs)
+
+    monkeypatch.setattr(rewrite, "_write_pyc", spy_write_pyc)
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+
+    hook = AssertionRewritingHook(pytestconfig)
+    assert hook.find_module("test_foo") is not None
+    assert len(write_pyc_called) == 1

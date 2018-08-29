@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # flake8: noqa
 # disable flake check on this file because some constructs are strange
 # or redundant on purpose and can't be disable on a line-by-line basis
@@ -6,8 +7,8 @@ import inspect
 import sys
 
 import _pytest._code
-import py
 import pytest
+import six
 from _pytest._code import Source
 from _pytest._code.source import ast
 
@@ -41,15 +42,11 @@ def test_source_str_function():
 
 
 def test_unicode():
-    try:
-        unicode
-    except NameError:
-        return
-    x = Source(unicode("4"))
+    x = Source(u"4")
     assert str(x) == "4"
-    co = _pytest._code.compile(unicode('u"\xc3\xa5"', "utf8"), mode="eval")
+    co = _pytest._code.compile(u'u"å"', mode="eval")
     val = eval(co)
-    assert isinstance(val, unicode)
+    assert isinstance(val, six.text_type)
 
 
 def test_source_from_function():
@@ -323,7 +320,7 @@ class TestSourceParsingAndCompiling(object):
 
     def test_compile_and_getsource(self):
         co = self.source.compile()
-        py.builtin.exec_(co, globals())
+        six.exec_(co, globals())
         f(7)
         excinfo = pytest.raises(AssertionError, "f(6)")
         frame = excinfo.traceback[-1].frame
@@ -392,7 +389,7 @@ def test_getfuncsource_dynamic():
         def g(): pass
     """
     co = _pytest._code.compile(source)
-    py.builtin.exec_(co, globals())
+    six.exec_(co, globals())
     assert str(_pytest._code.Source(f)).strip() == "def f():\n    raise ValueError"
     assert str(_pytest._code.Source(g)).strip() == "def g(): pass"
 
@@ -632,7 +629,7 @@ def test_issue55():
     assert str(s) == '  round_trip("""\n""")'
 
 
-def XXXtest_multiline():
+def test_multiline():
     source = getstatement(
         0,
         """\

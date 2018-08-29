@@ -64,11 +64,16 @@ class AssertionRewritingHook(object):
         self._rewritten_names = set()
         self._register_with_pkg_resources()
         self._must_rewrite = set()
+        # flag to guard against trying to rewrite a pyc file while we are already writing another pyc file,
+        # which might result in infinite recursion (#3506)
+        self._writing_pyc = False
 
     def set_session(self, session):
         self.session = session
 
     def find_module(self, name, path=None):
+        if self._writing_pyc:
+            return None
         state = self.config._assertstate
         state.trace("find_module called for: %s" % name)
         names = name.rsplit(".", 1)
@@ -151,7 +156,11 @@ class AssertionRewritingHook(object):
                 # Probably a SyntaxError in the test.
                 return None
             if write:
-                _write_pyc(state, co, source_stat, pyc)
+                self._writing_pyc = True
+                try:
+                    _write_pyc(state, co, source_stat, pyc)
+                finally:
+                    self._writing_pyc = False
         else:
             state.trace("found cached rewritten pyc for %r" % (fn,))
         self.modules[name] = co, pyc
@@ -223,7 +232,7 @@ class AssertionRewritingHook(object):
             mod.__loader__ = self
             # Normally, this attribute is 3.4+
             mod.__spec__ = spec_from_file_location(name, co.co_filename, loader=self)
-            py.builtin.exec_(co, mod.__dict__)
+            six.exec_(co, mod.__dict__)
         except:  # noqa
             if name in sys.modules:
                 del sys.modules[name]
@@ -402,12 +411,11 @@ def _saferepr(obj):
     JSON reprs.
 
     """
-    repr = py.io.saferepr(obj)
-    if isinstance(repr, six.text_type):
-        t = six.text_type
+    r = py.io.saferepr(obj)
+    if isinstance(r, six.text_type):
+        return r.replace(u"\n", u"\\n")
     else:
-        t = six.binary_type
-    return repr.replace(t("\n"), t("\\n"))
+        return r.replace(b"\n", b"\\n")
 
 
 from _pytest.assertion.util import format_explanation as _format_explanation  # noqa
@@ -446,10 +454,9 @@ def _should_repr_global_name(obj):
 def _format_boolop(explanations, is_or):
     explanation = "(" + (is_or and " or " or " and ").join(explanations) + ")"
     if isinstance(explanation, six.text_type):
-        t = six.text_type
+        return explanation.replace(u"%", u"%%")
     else:
-        t = six.binary_type
-    return explanation.replace(t("%"), t("%%"))
+        return explanation.replace(b"%", b"%%")
 
 
 def _call_reprcompare(ops, results, expls, each_obj):

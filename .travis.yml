@@ -1,7 +1,7 @@
 sudo: false
 language: python
 stages:
-- linting
+- baseline
 - test
 - name: deploy
   if: repo = pytest-dev/pytest AND tag IS present
@@ -15,9 +15,6 @@ env:
     - TOXENV=coveralls
     # note: please use "tox --listenvs" to populate the build matrix below
     # please remove the linting env in all cases
-    - TOXENV=py27
-    - TOXENV=py34
-    - TOXENV=py36
     - TOXENV=py27-pexpect
     - TOXENV=py27-xdist
     - TOXENV=py27-trial
@@ -44,6 +41,27 @@ jobs:
       python: '3.7'
       sudo: required
       dist: xenial
+    - &test-macos
+      language: generic
+      os: osx
+      osx_image: xcode9.4
+      sudo: required
+      install:
+        - python -m pip install --pre tox
+      env: TOXENV=py27
+    - <<: *test-macos
+      env: TOXENV=py37
+      before_install:
+        - brew update
+        - brew upgrade python
+        - brew unlink python
+        - brew link python
+
+    - stage: baseline
+      env: TOXENV=py27
+    - env: TOXENV=py34
+    - env: TOXENV=py36
+    - env: TOXENV=linting
 
     - stage: deploy
       python: '3.6'
@@ -60,14 +78,6 @@ jobs:
         on:
           tags: true
           repo: pytest-dev/pytest
-    - stage: linting
-      python: '3.6'
-      env:
-      install:
-      - pip install pre-commit
-      - pre-commit install-hooks
-      script:
-      - pre-commit run --all-files
 
 script: tox --recreate
 

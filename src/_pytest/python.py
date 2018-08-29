@@ -173,13 +173,14 @@ def pytest_configure(config):
         "or a list of tuples of values if argnames specifies multiple names. "
         "Example: @parametrize('arg1', [1,2]) would lead to two calls of the "
         "decorated test function, one with arg1=1 and another with arg1=2."
-        "see http://pytest.org/latest/parametrize.html for more info and "
-        "examples.",
+        "see https://docs.pytest.org/en/latest/parametrize.html for more info "
+        "and examples.",
     )
     config.addinivalue_line(
         "markers",
         "usefixtures(fixturename1, fixturename2, ...): mark tests as needing "
-        "all of the specified fixtures. see http://pytest.org/latest/fixture.html#usefixtures ",
+        "all of the specified fixtures. see "
+        "https://docs.pytest.org/en/latest/fixture.html#usefixtures ",
     )
 
 
@@ -201,31 +202,23 @@ def pytest_collect_file(path, parent):
     ext = path.ext
     if ext == ".py":
         if not parent.session.isinitpath(path):
-            for pat in parent.config.getini("python_files") + ["__init__.py"]:
-                if path.fnmatch(pat):
-                    break
-            else:
+            if not path_matches_patterns(
+                path, parent.config.getini("python_files") + ["__init__.py"]
+            ):
                 return
         ihook = parent.session.gethookproxy(path)
         return ihook.pytest_pycollect_makemodule(path=path, parent=parent)
+
+
+def path_matches_patterns(path, patterns):
+    """Returns True if the given py.path.local matches one of the patterns in the list of globs given"""
+    return any(path.fnmatch(pattern) for pattern in patterns)
 
 
 def pytest_pycollect_makemodule(path, parent):
     if path.basename == "__init__.py":
         return Package(path, parent)
     return Module(path, parent)
-
-
-def pytest_ignore_collect(path, config):
-    # Skip duplicate packages.
-    keepduplicates = config.getoption("keepduplicates")
-    if keepduplicates:
-        duplicate_paths = config.pluginmanager._duplicatepaths
-        if path.basename == "__init__.py":
-            if path in duplicate_paths:
-                return True
-            else:
-                duplicate_paths.add(path)
 
 
 @hookimpl(hookwrapper=True)
@@ -554,9 +547,7 @@ class Package(Module):
         self.name = fspath.dirname
         self.trace = session.trace
         self._norecursepatterns = session._norecursepatterns
-        for path in list(session.config.pluginmanager._duplicatepaths):
-            if path.dirname == fspath.dirname and path != fspath:
-                session.config.pluginmanager._duplicatepaths.remove(path)
+        self.fspath = fspath
 
     def _recurse(self, path):
         ihook = self.gethookproxy(path.dirpath())
@@ -594,18 +585,43 @@ class Package(Module):
         return path in self.session._initialpaths
 
     def collect(self):
+        # XXX: HACK!
+        # Before starting to collect any files from this package we need
+        # to cleanup the duplicate paths added by the session's collect().
+        # Proper fix is to not track these as duplicates in the first place.
+        for path in list(self.session.config.pluginmanager._duplicatepaths):
+            # if path.parts()[:len(self.fspath.dirpath().parts())] == self.fspath.dirpath().parts():
+            if path.dirname.startswith(self.name):
+                self.session.config.pluginmanager._duplicatepaths.remove(path)
+
         this_path = self.fspath.dirpath()
-        pkg_prefix = None
+        init_module = this_path.join("__init__.py")
+        if init_module.check(file=1) and path_matches_patterns(
+            init_module, self.config.getini("python_files")
+        ):
+            yield Module(init_module, self)
+        pkg_prefixes = set()
         for path in this_path.visit(rec=self._recurse, bf=True, sort=True):
             # we will visit our own __init__.py file, in which case we skip it
+            skip = False
             if path.basename == "__init__.py" and path.dirpath() == this_path:
                 continue
-            if pkg_prefix and pkg_prefix in path.parts():
+
+            for pkg_prefix in pkg_prefixes:
+                if (
+                    pkg_prefix in path.parts()
+                    and pkg_prefix.join("__init__.py") != path
+                ):
+                    skip = True
+
+            if skip:
                 continue
+
+            if path.isdir() and path.join("__init__.py").check(file=1):
+                pkg_prefixes.add(path)
+
             for x in self._collectfile(path):
                 yield x
-                if isinstance(x, Package):
-                    pkg_prefix = path.dirpath()
 
 
 def _get_xunit_setup_teardown(holder, attr_name, param_obj=None):
@@ -746,7 +762,7 @@ class FunctionMixin(PyobjMixin):
     def _repr_failure_py(self, excinfo, style="long"):
         if excinfo.errisinstance(fail.Exception):
             if not excinfo.value.pytrace:
-                return py._builtin._totext(excinfo.value)
+                return six.text_type(excinfo.value)
         return super(FunctionMixin, self)._repr_failure_py(excinfo, style=style)
 
     def repr_failure(self, excinfo, outerr=None):
@@ -883,12 +899,13 @@ class Metafunc(fixtures.FuncargnamesCompatAttr):
     """
 
     def __init__(self, definition, fixtureinfo, config, cls=None, module=None):
-        #: access to the :class:`_pytest.config.Config` object for the test session
         assert (
             isinstance(definition, FunctionDefinition)
             or type(definition).__name__ == "DefinitionMock"
         )
         self.definition = definition
+
+        #: access to the :class:`_pytest.config.Config` object for the test session
         self.config = config
 
         #: the module object where the test function is defined in.

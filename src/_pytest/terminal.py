@@ -263,7 +263,7 @@ class TerminalReporter(object):
     def write_fspath_result(self, nodeid, res):
         fspath = self.config.rootdir.join(nodeid.split("::")[0])
         if fspath != self.currentfspath:
-            if self.currentfspath is not None:
+            if self.currentfspath is not None and self._show_progress_info:
                 self._write_progress_information_filling_space()
             self.currentfspath = fspath
             fspath = self.startdir.bestrelpath(fspath)
@@ -358,12 +358,12 @@ class TerminalReporter(object):
     def pytest_runtest_logreport(self, report):
         rep = report
         res = self.config.hook.pytest_report_teststatus(report=rep)
-        cat, letter, word = res
+        category, letter, word = res
         if isinstance(word, tuple):
             word, markup = word
         else:
             markup = None
-        self.stats.setdefault(cat, []).append(rep)
+        self.stats.setdefault(category, []).append(rep)
         self._tests_ran = True
         if not letter and not word:
             # probably passed setup/teardown
@@ -691,7 +691,7 @@ class TerminalReporter(object):
                     indented = "\n".join("  " + x for x in lines)
                     self._tw.line(indented)
                 self._tw.line()
-            self._tw.line("-- Docs: http://doc.pytest.org/en/latest/warnings.html")
+            self._tw.line("-- Docs: https://docs.pytest.org/en/latest/warnings.html")
 
     def summary_passes(self):
         if self.config.option.tbstyle != "no":
@@ -706,7 +706,12 @@ class TerminalReporter(object):
                     self._outrep_summary(rep)
 
     def print_teardown_sections(self, rep):
+        showcapture = self.config.option.showcapture
+        if showcapture == "no":
+            return
         for secname, content in rep.sections:
+            if showcapture != "all" and showcapture not in secname:
+                continue
             if "teardown" in secname:
                 self._tw.sep("-", secname)
                 if content[-1:] == "\n":
